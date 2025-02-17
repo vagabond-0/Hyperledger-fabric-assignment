@@ -68,6 +68,12 @@ func (s *SmartContract) InitLedger(ctx contractapi.TransactionContextInterface) 
 
 // CreateAsset issues a new asset to the world state with given details.
 func (s *SmartContract) CreateAsset(ctx contractapi.TransactionContextInterface, id, color string, size int, owner string, appraisedValue int) error {
+	// Check if the client has the role=admin attribute
+	role, err := ctx.GetClientIdentity().GetAttributeValue("role")
+	if err != nil || role != "admin" {
+		return fmt.Errorf("only admin can create assets")
+	}
+
 	exists, err := s.AssetExists(ctx, id)
 	if err != nil {
 		return err
@@ -75,6 +81,7 @@ func (s *SmartContract) CreateAsset(ctx contractapi.TransactionContextInterface,
 	if exists {
 		return fmt.Errorf("the asset %s already exists", id)
 	}
+
 	asset := Asset{
 		ID:             id,
 		Color:          color,
@@ -107,87 +114,29 @@ func (s *SmartContract) ReadAsset(ctx contractapi.TransactionContextInterface, i
 		return nil, err
 	}
 
+	// Check if the client is the owner or has the role=auditor attribute
+	role, err := ctx.GetClientIdentity().GetAttributeValue("role")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get client role: %v", err)
+	}
+
+	clientID := ctx.GetClientIdentity().GetID()
+	if role != "auditor" && asset.Owner != clientID {
+		return nil, fmt.Errorf("unauthorized access: only owner or auditor can read this asset")
+	}
+
 	return &asset, nil
 }
 
-// UpdateAsset updates an existing asset in the world state with provided parameters.
-func (s *SmartContract) UpdateAsset(ctx contractapi.TransactionContextInterface, id, color string, size int, owner string, appraisedValue int) error {
-	exists, err := s.AssetExists(ctx, id)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return fmt.Errorf("the asset %s does not exist", id)
-	}
-
-	// overwriting original asset with new asset
-	asset := Asset{
-		ID:             id,
-		Color:          color,
-		Size:           size,
-		Owner:          owner,
-		AppraisedValue: appraisedValue,
-	}
-
-	assetJSON, err := json.Marshal(asset)
-	if err != nil {
-		return err
-	}
-
-	return ctx.GetStub().PutState(id, assetJSON)
-}
-
-// DeleteAsset deletes a given asset from the world state.
-func (s *SmartContract) DeleteAsset(ctx contractapi.TransactionContextInterface, id string) error {
-	exists, err := s.AssetExists(ctx, id)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return fmt.Errorf("the asset %s does not exist", id)
-	}
-
-	return ctx.GetStub().DelState(id)
-}
-
-// AssetExists returns true when asset with given ID exists in world state
-func (s *SmartContract) AssetExists(ctx contractapi.TransactionContextInterface, id string) (bool, error) {
-	assetJSON, err := ctx.GetStub().GetState(id)
-	if err != nil {
-		return false, fmt.Errorf("failed to read from world state. %s", err.Error())
-	}
-
-	return assetJSON != nil, nil
-}
-
-// TransferAsset updates the owner field of asset with given id in world state, and returns the old owner.
-func (s *SmartContract) TransferAsset(ctx contractapi.TransactionContextInterface, id string, newOwner string) (string, error) {
-	asset, err := s.ReadAsset(ctx, id)
-	if err != nil {
-		return "", err
-	}
-
-	oldOwner := asset.Owner
-	asset.Owner = newOwner
-
-	assetJSON, err := json.Marshal(asset)
-	if err != nil {
-		return "", err
-	}
-
-	err = ctx.GetStub().PutState(id, assetJSON)
-	if err != nil {
-		return "", err
-	}
-
-	return oldOwner, nil
-}
-
-// GetAllAssets returns all assets found in world state
+// GetAllAssets returns all assets found in world state (only allowed for auditor)
 func (s *SmartContract) GetAllAssets(ctx contractapi.TransactionContextInterface) ([]QueryResult, error) {
-	// range query with empty string for startKey and endKey does an open-ended query of all assets in the chaincode namespace.
-	resultsIterator, err := ctx.GetStub().GetStateByRange("", "")
+	// Check if the client has the role=auditor attribute
+	role, err := ctx.GetClientIdentity().GetAttributeValue("role")
+	if err != nil || role != "auditor" {
+		return nil, fmt.Errorf("only auditor can view all assets")
+	}
 
+	resultsIterator, err := ctx.GetStub().GetStateByRange("", "")
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +146,6 @@ func (s *SmartContract) GetAllAssets(ctx contractapi.TransactionContextInterface
 
 	for resultsIterator.HasNext() {
 		queryResponse, err := resultsIterator.Next()
-
 		if err != nil {
 			return nil, err
 		}
@@ -213,6 +161,16 @@ func (s *SmartContract) GetAllAssets(ctx contractapi.TransactionContextInterface
 	}
 
 	return results, nil
+}
+
+// AssetExists returns true when asset with given ID exists in world state
+func (s *SmartContract) AssetExists(ctx contractapi.TransactionContextInterface, id string) (bool, error) {
+	assetJSON, err := ctx.GetStub().GetState(id)
+	if err != nil {
+		return false, fmt.Errorf("failed to read from world state. %s", err.Error())
+	}
+
+	return assetJSON != nil, nil
 }
 
 func main() {
